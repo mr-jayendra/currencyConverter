@@ -1,0 +1,190 @@
+<!doctype html>
+<html><head><meta charset="utf-8">
+<style>
+  :root { --ink:#1f2a44; --accent:#2b59c3; --paper:#fffdf7; }
+  * { box-sizing:border-box; }
+  html,body { margin:0; background:transparent; font-family:'Courier New',Courier,monospace; color:var(--ink); }
+  #q { width:100%; height:32px; margin-bottom:8px; padding:0 12px; border:1.5px solid #cfc6b0;
+       border-radius:16px; background:#fff; font:inherit; font-size:13px; color:var(--ink); outline:none; }
+  #q:focus { border-color:var(--accent); }
+  .drum { position:relative; height:200px; border:2px solid #cfc6b0; border-radius:22px; overflow:hidden;
+          background:linear-gradient(180deg,#efe8d6 0%,#fffdf7 28%,#fffdf7 72%,#efe8d6 100%);
+          box-shadow:inset 0 8px 14px rgba(80,60,20,.12), inset 0 -8px 14px rgba(80,60,20,.12); }
+  .band { position:absolute; left:8px; right:8px; top:77px; height:46px; border-radius:14px; pointer-events:none;
+          border:2px solid var(--accent); background:rgba(43,89,195,.07); z-index:2; }
+  #wheel { height:100%; overflow-y:scroll; scroll-snap-type:y mandatory; perspective:700px;
+           scrollbar-width:none; outline:none; cursor:grab; -webkit-mask-image:linear-gradient(transparent 0,#000 22%,#000 78%,transparent 100%);
+           mask-image:linear-gradient(transparent 0,#000 22%,#000 78%,transparent 100%); }
+  #wheel::-webkit-scrollbar { display:none; }
+  .spacer { height:77px; }
+  .item { height:46px; display:flex; align-items:center; gap:12px; padding:0 22px; scroll-snap-align:center;
+          transform-origin:center; will-change:transform; user-select:none; }
+  .item .fl { width:32px; height:22px; flex:none; display:flex; align-items:center; justify-content:center; }
+  .item img { width:32px; height:22px; object-fit:cover; border-radius:3px; box-shadow:0 0 0 1px rgba(0,0,0,.18); }
+  .item .nm { flex:1; font-size:15px; white-space:nowrap; overflow:hidden; text-overflow:ellipsis; }
+  .item .cd { font-weight:bold; font-size:15px; }
+  .item .sy { width:38px; text-align:right; color:#6b7280; font-size:14px; }
+  .item.active .nm, .item.active .cd { color:var(--accent); }
+</style></head>
+<body>
+  <input id="q" type="text" placeholder="type a country or code to jump...">
+  <div class="drum">
+    <div class="band"></div>
+    <div id="wheel" tabindex="0"><div class="spacer"></div><div id="list"></div><div class="spacer"></div></div>
+  </div>
+<script>
+  const ITEM = 46;
+  const wheel = document.getElementById('wheel');
+  const list = document.getElementById('list');
+  const q = document.getElementById('q');
+  let opts = [], optsKey = '', items = [], sent = null, lastSelected = null, timer = null;
+  const recent = {};   /* values this wheel sent recently: their echo from Python must not move the wheel */
+  let drag = null, suppress = false;
+
+  function post(type, data) {
+    window.parent.postMessage(Object.assign({isStreamlitMessage: true, type: type}, data || {}), '*');
+  }
+  function esc(s) {
+    return String(s).replace(/[&<>"]/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;'}[c]));
+  }
+  function build() {
+    list.innerHTML = '';
+    items = opts.map((o, i) => {
+      const d = document.createElement('div');
+      d.className = 'item';
+      const flag = o.iso
+        ? '<img src="https://flagcdn.com/w80/' + o.iso + '.png" alt="" onerror="this.style.display=\'none\'">'
+        : '';
+      d.innerHTML = '<span class="fl">' + flag + '</span><span class="nm">' + esc(o.name) +
+                    '</span><span class="cd">' + o.code + '</span><span class="sy">' + esc(o.symbol) + '</span>';
+      d.addEventListener('click', () => goTo(i, true));
+      list.appendChild(d);
+      return d;
+    });
+  }
+  function idx() {
+    return Math.max(0, Math.min(opts.length - 1, Math.round(wheel.scrollTop / ITEM)));
+  }
+  let anim = null, animTarget = null, lastStep = 0;
+  function goTo(i, smooth) {
+    i = Math.max(0, Math.min(opts.length - 1, i));
+    cancelAnimationFrame(anim);
+    const target = i * ITEM, start = wheel.scrollTop;
+    if (!smooth) { animTarget = null; wheel.scrollTop = target; return; }
+    if (Math.abs(target - start) < 1) { animTarget = null; return; }
+    animTarget = i;
+    const dur = Math.min(320, 110 + Math.abs(target - start) / ITEM * 12);
+    const t0 = performance.now();
+    wheel.style.scrollSnapType = 'none';
+    const step = now => {
+      const p = Math.min(1, (now - t0) / dur);
+      wheel.scrollTop = start + (target - start) * (1 - Math.pow(1 - p, 3));
+      if (p < 1) { anim = requestAnimationFrame(step); }
+      else { animTarget = null; wheel.style.scrollSnapType = ''; }
+    };
+    anim = requestAnimationFrame(step);
+  }
+  /* mouse wheel / trackpad: exactly one item per step, no runaway momentum */
+  wheel.addEventListener('wheel', e => {
+    e.preventDefault();
+    const now = performance.now();
+    if (Math.abs(e.deltaY) < 4 || now - lastStep < 120) return;
+    lastStep = now;
+    const base = animTarget !== null ? animTarget : idx();
+    goTo(base + (e.deltaY > 0 ? 1 : -1), true);
+  }, {passive: false});
+  function drum() {
+    const top = wheel.scrollTop;
+    items.forEach((el, i) => {
+      const d = (i * ITEM - top) / ITEM;
+      const a = Math.min(Math.abs(d), 3);
+      el.style.transform = 'rotateX(' + Math.max(-70, Math.min(70, -d * 22)) + 'deg) scale(' + (1 - a * 0.07) + ')';
+      el.style.opacity = Math.max(0.15, 1 - Math.abs(d) * 0.28);
+    });
+  }
+  function settle() {
+    const i = idx();
+    items.forEach((el, k) => el.classList.toggle('active', k === i));
+    const v = opts[i] && opts[i].code;
+    if (v && v !== sent) {
+      sent = v;
+      recent[v] = performance.now();
+      post('streamlit:setComponentValue', {value: v, dataType: 'json'});
+    }
+  }
+  wheel.addEventListener('scroll', () => {
+    requestAnimationFrame(drum);
+    clearTimeout(timer);
+    timer = setTimeout(settle, 90);
+  });
+  wheel.addEventListener('keydown', e => {
+    const base = animTarget !== null ? animTarget : idx();
+    if (e.key === 'ArrowDown') { e.preventDefault(); goTo(base + 1, true); }
+    if (e.key === 'ArrowUp')   { e.preventDefault(); goTo(base - 1, true); }
+  });
+  let qTimer = null;
+  function jump() {
+    const t = q.value.trim().toLowerCase();
+    if (!t) return;
+    let i = opts.findIndex(o => o.code.toLowerCase() === t);
+    if (i < 0) i = opts.findIndex(o => o.name.toLowerCase() === t);
+    if (i < 0) i = opts.findIndex(o => o.name.toLowerCase().startsWith(t));
+    if (i < 0) i = opts.findIndex(o => (o.name + ' ' + o.code).toLowerCase().includes(t));
+    if (i >= 0) goTo(i, true);
+  }
+  q.addEventListener('input', () => { clearTimeout(qTimer); qTimer = setTimeout(jump, 350); });
+  q.addEventListener('keydown', e => { if (e.key === 'Enter') { clearTimeout(qTimer); jump(); } });
+  /* mouse drag (touch / trackpad scroll natively) */
+  wheel.addEventListener('pointerdown', e => {
+    if (e.pointerType !== 'mouse') return;
+    drag = {y: e.clientY, top: wheel.scrollTop, moved: false};
+  });
+  window.addEventListener('pointermove', e => {
+    if (!drag) return;
+    const dy = e.clientY - drag.y;
+    if (Math.abs(dy) > 4) {
+      drag.moved = true;
+      wheel.style.scrollSnapType = 'none';
+      wheel.style.cursor = 'grabbing';
+      wheel.scrollTop = drag.top - dy;
+    }
+  });
+  window.addEventListener('pointerup', () => {
+    if (!drag) return;
+    const moved = drag.moved;
+    drag = null;
+    wheel.style.cursor = '';
+    if (moved) {
+      suppress = true;
+      wheel.style.scrollSnapType = '';
+      goTo(idx(), true);
+    }
+  });
+  wheel.addEventListener('click', e => {
+    if (suppress) { e.stopPropagation(); e.preventDefault(); suppress = false; }
+  }, true);
+
+  function render(args) {
+    const key = JSON.stringify(args.options);
+    if (key !== optsKey) { optsKey = key; opts = args.options; build(); }
+    if (args.selected !== lastSelected) {
+      const first = lastSelected === null;
+      lastSelected = args.selected;
+      const i = Math.max(0, opts.findIndex(o => o.code === args.selected));
+      if (first) sent = args.selected;     /* python already holds this value */
+      const echo = recent[args.selected] && (performance.now() - recent[args.selected] < 2500);
+      if (first || !echo) {                /* only external changes (e.g. swap) move the wheel */
+        goTo(i, false);
+        drum();
+        items.forEach((el, k) => el.classList.toggle('active', k === i));
+      }
+    }
+    post('streamlit:setFrameHeight', {height: 250});
+  }
+  window.addEventListener('message', e => {
+    if (e.data && e.data.type === 'streamlit:render') render(e.data.args);
+  });
+  post('streamlit:componentReady', {apiVersion: 1});
+  post('streamlit:setFrameHeight', {height: 250});
+</script>
+</body></html>
